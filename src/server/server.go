@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"process"
+	"session"
 )
 
 var InputConfigFile = flag.String("conf_file", "config.json", "input config name")
@@ -27,6 +28,8 @@ func main() {
 	err = process.InitDB(Conf.DB_url)
 	CheckError(err)
 
+	// precess.InitFileAddress(Conf.FileServer_Laddr)
+
 	// logger.Debug(*Conf)
 
 	// 开启监听
@@ -45,8 +48,9 @@ func main() {
 		}
 
 		// consoleOutput(conn.RemoteAddr().String(), " tcp connect success")
-		logger.Info(conn.RemoteAddr().String(), " tcp connect success")
-
+		logger.Info(conn.RemoteAddr().String(), " tcp 成功连接")
+		s := session.NewSession(conn)
+		s.Run()
 		// s := session.NewSession(conn)
 		// s.Run()
 	}
