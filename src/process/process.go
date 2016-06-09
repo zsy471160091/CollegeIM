@@ -41,11 +41,16 @@ func init() {
 		protocol.IM_GET_USER_INFO:    do_get_user_info,
 		protocol.IM_GET_USER_FRIENDS: do_get_user_friends,
 		protocol.IM_CHAT_P2P:         do_chat_p2p,
+		protocol.IM_GET_OFFLINE_MSG:  do_get_offline_msg,
 		protocol.IM_UPLOAD_FILE:      do_upload_file,
 		protocol.IM_MODIFY_PWD:       do_modify_pwd,
 		protocol.IM_FIND_USER:        do_find_user,
 		protocol.IM_ADD_FRIEND:       do_add_friend,
 		protocol.IM_DELETE_FRIEND:    do_delete_friend,
+		protocol.IM_GET_GROUP_LIST:   do_get_group_list,
+		protocol.IM_GET_GROUP_USERS:  do_get_group_users,
+		protocol.IM_CHAT_GROUP:       do_chat_group,
+		protocol.IM_PUSH:             do_push,
 		// IM_USER_STATUS:Do_User_STATUS,
 		// IM_USER_INFO:Do
 		// IM_CHAT_GROUP
@@ -241,20 +246,26 @@ func do_get_user_friends(msg []byte, sendChan chan<- []byte) {
 func do_chat_p2p(msg []byte, sendChan chan<- []byte) {
 	type chatMsg struct {
 		// ID        bson.ObjectId `json:"_id"`
-		From_id string `bson:"from_id"`
-		To_id   string `bson:"to_id"`
-		Msg     string `bson:"msg"`
-		Time    string `bson:"time"`
-		OffLine string `bson:"offline"`
+		From_id   string `bson:"from_id"`
+		From_name string `bson:"from_name"`
+		To_id     string `bson:"to_id"`
+		To_name   string `bson:"to_name"`
+		Msg       string `bson:"msg"`
+		Time      string `bson:"time"`
+		OffLine   string `bson:"offline"`
 	}
 	chatmsg := chatMsg{}
 	// 从请求信息中取出目标用户id
 	fromId := getId(string(msg), "from_id")
+	fromName := getId(string(msg), "from_name")
 	toId := getId(string(msg), "to_id")
-	logger.Debug("do_get_user_info:", "from_id", fromId, "to_id", toId)
+	toName := getId(string(msg), "to_name")
+	logger.Debug("do_chat_p2p:", "from_id", fromId, "from_name", fromName, "to_id", toId, "to_name", toName)
 
 	chatmsg.From_id = fromId
+	chatmsg.From_name = fromName
 	chatmsg.To_id = toId
+	chatmsg.To_name = toName
 	chatmsg.Msg = getId(string(msg), "msg")
 	chatmsg.Time = time.Now().Format("2006-01-02 15:04:05")
 
@@ -281,15 +292,115 @@ func do_chat_p2p(msg []byte, sendChan chan<- []byte) {
 		logger.Warn("Error: 服务器端无法连接到数据库")
 		return
 	}
-	c := session.DB("D_" + toId).C("C_ALL_MSG")
+	c := session.DB("D_" + toId).C("C_P2P_CHAT_MSG")
 
 	defer session.Close()
 
 	c.Insert(&chatmsg)
 
-	c = session.DB("D_" + fromId).C("C_ALL_MSG")
+	c = session.DB("D_" + fromId).C("C_P2P_CHAT_MSG")
 	chatmsg.OffLine = "N"
 	c.Insert(&chatmsg)
+
+	return
+}
+
+// 用户获取离线信息
+func do_get_offline_msg(msg []byte, sendChan chan<- []byte) {
+	type chatMsg struct {
+		ID         bson.ObjectId `bson:"_id"`
+		From_id    string        `bson:"from_id"`
+		From_name  string        `bson:"from_name"`
+		Group_id   string        `bson:"group_id"`
+		Group_name string        `bson:"group_name"`
+		Msg        string        `bson:"msg"`
+		Time       string        `bson:"time"`
+		OffLine    string        `bson:"offline"`
+	}
+
+	//
+	type chatRep struct {
+		Cmd       int    `json:"cmd"`
+		From_id   string `json:"from_id"`
+		From_name string `json:"from_name"`
+		Msg       string `json:"msg"`
+		Time      string `json:"time"`
+	}
+	type groupChatRep struct {
+		Cmd        int    `json:"cmd"`
+		From_id    string `json:"from_id"`
+		From_name  string `json:"from_name"`
+		Group_id   string `json:"group_id"`
+		Group_name string `json:"group_name"`
+		Msg        string `json:"msg"`
+		Time       string `json:"time"`
+	}
+	chatrep := chatRep{
+		Cmd: protocol.IM_CHAT_P2P,
+	}
+	groupchatrep := groupChatRep{
+		Cmd: protocol.IM_CHAT_GROUP,
+	}
+
+	// 解析出要获取离线消息的用户id
+	reqId := getId(string(msg), "id")
+
+	chatmsg := []chatMsg{}
+	groupmsg := []chatMsg{}
+	// 查询点对点离线消息
+	session, err := mgo.Dial(g_DB_URL)
+	if err != nil {
+		logger.Warn("Error: 服务器端无法连接到数据库")
+		return
+	}
+	c := session.DB("D_" + reqId).C("C_P2P_CHAT_MSG")
+
+	defer session.Close()
+
+	c.Find(bson.M{"offline": "Y"}).All(&chatmsg)
+
+	targetChan := g_clientList.get(reqId)
+	for _, v := range chatmsg {
+		chatrep.From_id = v.From_id
+		chatrep.From_name = v.From_name
+		chatrep.Time = v.Time
+		chatrep.Msg = v.Msg
+
+		msg, err := json.Marshal(chatrep)
+		if err != nil {
+			logger.Warn("编码成json数据时出错, err:", err)
+		}
+		targetChan <- msg
+		c.Update(bson.M{"_id": v.ID},
+			bson.M{"$set": bson.M{
+				"offline": "N",
+			}})
+	}
+
+	c = session.DB("D_" + reqId).C("C_GROUP_CHAT_MSG")
+	c.Find(bson.M{"offline": "Y"}).All(&groupmsg)
+	for _, v := range groupmsg {
+		groupchatrep.From_id = v.From_id
+		groupchatrep.From_name = v.From_name
+		groupchatrep.Group_id = v.Group_id
+		groupchatrep.Group_name = v.Group_name
+		groupchatrep.Time = v.Time
+		groupchatrep.Msg = v.Msg
+
+		msg, err := json.Marshal(groupchatrep)
+		if err != nil {
+			logger.Warn("编码成json数据时出错, err:", err)
+		}
+		targetChan <- msg
+		c.Update(bson.M{"_id": v.ID},
+			bson.M{"$set": bson.M{
+				"offline": "N",
+			}})
+	}
+	// 查询群聊天离线消息
+	// c = session.DB("D_" + fromId).C("C_ALL_MSG")
+	// chatmsg.OffLine = "N"
+	// c.Insert(&chatmsg)
 
 	return
 }
@@ -506,63 +617,326 @@ func do_delete_friend(msg []byte, sendChan chan<- []byte) {
 
 }
 
-// 推送离线信息
-func do_send_offline_msg(id string) {
-	type chatMsg struct {
-		ID      bson.ObjectId `bson:"_id"`
-		From_id string        `bson:"from_id"`
-		To_id   string        `bson:"to_id"`
-		Msg     string        `bson:"msg"`
-		Name    string        `bson:"name"`
-		Time    string        `bson:"time"`
-		OffLine string        `bson:"offline"`
-	}
+// 获取群列表
+func do_get_group_list(msg []byte, sendChan chan<- []byte) {
+	rep := protocol.GetGroupListRep{}
+	rep.Cmd = protocol.IM_GET_GROUP_LIST
 
-	//
-	type chatRep struct {
-		Cmd     int    `json:"cmd"`
-		From_id string `json:"from_id"`
-		To_id   string `json:"to_id"`
-		Msg     string `json:"msg"`
-		Name    string `json:"name"`
-		Time    string `json:"time"`
-	}
-	chatrep := chatRep{
-		Cmd: protocol.IM_CHAT_P2P,
-	}
-	chatmsg := []chatMsg{}
-
-	// 查询离线消息
-	session, err := mgo.Dial(g_DB_URL)
-	if err != nil {
-		logger.Warn("Error: 服务器端无法连接到数据库")
-		return
-	}
-	c := session.DB("D_" + id).C("C_ALL_MSG")
-
-	defer session.Close()
-
-	c.Find(bson.M{"offline": "Y"}).All(&chatmsg)
-
-	targetChan := g_clientList.get(id)
-	for _, v := range chatmsg {
-		chatrep.From_id = v.From_id
-		chatrep.To_id = v.To_id
-		chatrep.Name = v.Name
-		chatrep.Time = v.Time
-		chatrep.Msg = v.Msg
-
-		msg, err := json.Marshal(chatrep)
+	defer func() {
+		msg, err := json.Marshal(rep)
 		if err != nil {
 			logger.Warn("编码成json数据时出错, err:", err)
 		}
-		targetChan <- msg
-	}
-	// c = session.DB("D_" + fromId).C("C_ALL_MSG")
-	// chatmsg.OffLine = "N"
-	// c.Insert(&chatmsg)
+		sendChan <- msg
+	}()
 
+	// 获取指定用户id
+	reqId := getId(string(msg), "id")
+	logger.Debug("do_get_group_list:", "id", reqId)
+
+	// 连接数据库服务器并指定数据库和集合
+	session, err := mgo.Dial(g_DB_URL)
+	if err != nil {
+		rep.Ack = "error"
+		return
+	}
+	c := session.DB("D_USER").C("C_USER_STATUS")
+	defer session.Close()
+
+	// 从数据库中取出相应数据
+	// type friendItem struct {
+	// 	Id   string `bson:"id"`
+	// 	Name string `bson:"name"`
+	// }
+
+	type groups struct {
+		Groups []protocol.GetGroupListItem `bson:"groups"`
+	}
+
+	groupList := groups{}
+	err = c.Find(bson.M{"id": reqId}).One(&groupList)
+
+	if err != nil {
+		rep.Ack = "error"
+		return
+	} else {
+		rep.Groups = groupList.Groups
+		rep.Ack = "success"
+	}
+}
+
+// 获取指定群的成员
+func do_get_group_users(msg []byte, sendChan chan<- []byte) {
+	rep := protocol.GetGroupUsersRep{}
+	rep.Cmd = protocol.IM_GET_GROUP_USERS
+
+	defer func() {
+		msg, err := json.Marshal(rep)
+		if err != nil {
+			logger.Warn("编码成json数据时出错, err:", err)
+		}
+		sendChan <- msg
+	}()
+
+	// 获取指定用户id
+	reqId := getId(string(msg), "id")
+	logger.Debug("do_get_group_users:", "id", reqId)
+
+	// 连接数据库服务器并指定数据库和集合
+	session, err := mgo.Dial(g_DB_URL)
+	if err != nil {
+		rep.Ack = "error"
+		return
+	}
+	c := session.DB("D_GROUP").C("C_GROUP_INFO")
+	defer session.Close()
+
+	// 从数据库中取出相应数据
+	// type friendItem struct {
+	// 	Id   string `bson:"id"`
+	// 	Name string `bson:"name"`
+	// }
+
+	type users struct {
+		Users []protocol.GetGroupUserItem `bson:"member"`
+	}
+
+	user := users{}
+	err = c.Find(bson.M{"_id": bson.ObjectIdHex(reqId)}).One(&user)
+
+	if err != nil {
+		rep.Ack = "error"
+		return
+	} else {
+		rep.Id = reqId
+		rep.Users = user.Users
+		rep.Ack = "success"
+	}
+
+}
+
+// 群聊天
+func do_chat_group(msg []byte, sendChan chan<- []byte) {
+	type chatMsg struct {
+		// ID        bson.ObjectId `json:"_id"`
+		From_id    string `bson:"from_id"`
+		From_name  string `bson:"from_name"`
+		Group_id   string `bson:"group_id"`
+		Group_name string `bson:"group_name"`
+		Msg        string `bson:"msg"`
+		Time       string `bson:"time"`
+		OffLine    string `bson:"offline"`
+	}
+	chatmsg := chatMsg{}
+	// 从请求信息中取出目标用户id
+	fromId := getId(string(msg), "from_id")
+	fromName := getId(string(msg), "from_name")
+	GroupId := getId(string(msg), "group_id")
+	GroupName := getId(string(msg), "group_name")
+	logger.Debug("do_chat_group:", "from_id", fromId, "from_name", fromName, "group_id", GroupId, "group_name", GroupName)
+
+	chatmsg.From_id = fromId
+	chatmsg.From_name = fromName
+	chatmsg.Group_id = GroupId
+	chatmsg.Group_name = GroupName
+	chatmsg.Msg = getId(string(msg), "msg")
+	chatmsg.Time = time.Now().Format("2006-01-02 15:04:05")
+
+	// 查询指定群的所有成员
+	// 连接数据库服务器并指定数据库和集合
+	session, err := mgo.Dial(g_DB_URL)
+	if err != nil {
+		return
+	}
+	c := session.DB("D_GROUP").C("C_GROUP_INFO")
+	defer session.Close()
+
+	// 从数据库中取出相应数据
+	type users struct {
+		Users []protocol.GetGroupUserItem `bson:"member"`
+	}
+
+	user := users{}
+	err = c.Find(bson.M{"_id": bson.ObjectIdHex(GroupId)}).One(&user)
+
+	if err != nil {
+		return
+	} else {
+		for _, v := range user.Users {
+			if g_clientList.contains(v.Id) {
+				logger.Debug("目标用户", v.Id, "在线")
+
+				jroot, err := json4g.LoadByString(string(msg))
+				if err != nil {
+					logger.Warn("json解析失败:", err)
+				}
+				jroot.AddNode(json4g.NowJsonNode("time", chatmsg.Time))
+
+				targetChan := g_clientList.get(v.Id)
+				targetChan <- []byte(jroot.ToString())
+				chatmsg.OffLine = "N"
+			} else {
+				chatmsg.OffLine = "Y"
+			}
+			c := session.DB("D_" + v.Id).C("C_GROUP_CHAT_MSG")
+			c.Insert(&chatmsg)
+		}
+		c = session.DB("D_GROUP").C("C_" + GroupId + "_MSG")
+		c.Insert(&chatmsg)
+	}
 	return
+}
+
+// 下发通知
+func do_push(msg []byte, sendChan chan<- []byte) {
+	type pushRep struct {
+		Cmd int    `json:"cmd"`
+		Ack string `json:"ack"`
+		Msg string `json:"msg"`
+	}
+	rep := pushRep{
+		Cmd: protocol.IM_PUSH_REP,
+	}
+
+	defer func() {
+		msg, err := json.Marshal(rep)
+		if err != nil {
+			logger.Warn("编码成json数据时出错, err:", err)
+		}
+		sendChan <- msg
+	}()
+
+	// 从请求信息中取出相应信息
+	fromId := getId(string(msg), "id")
+	fromName := getId(string(msg), "name")
+	school := getId(string(msg), "school")
+	specialty := getId(string(msg), "specialty")
+	grade := getId(string(msg), "grade")
+	_class := getId(string(msg), "class")
+	title := getId(string(msg), "title")
+	content := getId(string(msg), "content")
+
+	logger.Debug("do_push:", "id", fromId,
+		"name", fromName,
+		"school", school,
+		"Specialty", specialty,
+		"grade", grade,
+		"class", _class,
+		"title", title,
+		"content", content)
+
+	pushmsg := protocol.PushMsg{
+		ID:        bson.NewObjectId(),
+		Fromid:    fromId,
+		Fromname:  fromName,
+		School:    school,
+		Specialty: specialty,
+		Grade:     grade,
+		Class:     _class,
+		Title:     title,
+		Content:   content,
+		Time:      time.Now().Format("2006-01-02 15:04:05"),
+	}
+
+	// 将该通知信息存入数据库
+	session, err := mgo.Dial(g_DB_URL)
+	if err != nil {
+		return
+	}
+	c := session.DB("D_PUSH_MSG").C("C_ALL_MSG")
+	defer session.Close()
+
+	err = c.Insert(&pushmsg)
+	if err != nil {
+		rep.Ack = "error"
+		rep.Msg = "通知下发失败"
+	} else {
+		rep.Ack = "success"
+		rep.Msg = "成功发送通知"
+		go sendPushMsg(pushmsg)
+	}
+}
+
+// 通知推送
+func sendPushMsg(pushmsg protocol.PushMsg) {
+	type notificationMsg struct {
+		ID       bson.ObjectId `bson:"_id"`
+		Fromid   string        `bson:"id"`
+		Fromname string        `bson:"name"`
+		Title    string        `bson:"title"`
+		Content  string        `bson:"content"`
+		Time     string        `bson:"time"`
+		IsRead   string        `bson:"isRead"`
+	}
+	type sendMsg struct {
+		Cmd      int    `json:"cmd"`
+		Fromid   string `json:"id"`
+		Fromname string `json:"name"`
+		Title    string `json:"title"`
+		Content  string `json:"content"`
+		Time     string `json:"time"`
+	}
+	type userItem struct {
+		Id   string `bson:"id"`
+		Name string `bson:"name"`
+	}
+
+	//
+	noticMsg := notificationMsg{
+		ID:       pushmsg.ID,
+		Fromid:   pushmsg.Fromid,
+		Fromname: pushmsg.Fromname,
+		Title:    pushmsg.Title,
+		Content:  pushmsg.Content,
+		Time:     pushmsg.Time,
+	}
+	sendmsg := sendMsg{
+		Cmd:      protocol.IM_PUSH,
+		Fromid:   pushmsg.Fromid,
+		Fromname: pushmsg.Fromname,
+		Title:    pushmsg.Title,
+		Content:  pushmsg.Content,
+		Time:     pushmsg.Time,
+	}
+	users := []userItem{}
+
+	// 连接数据库，查询通知需要推送的用户
+	session, err := mgo.Dial(g_DB_URL)
+	if err != nil {
+		return
+	}
+	c := session.DB("D_USER").C("C_USER_INFO")
+	defer session.Close()
+
+	// 确认目标用户
+	if pushmsg.School != "" {
+		err = c.Find(nil).All(&users)
+	} else if pushmsg.Grade == "" {
+		err = c.Find(bson.M{"specialty": pushmsg.Specialty}).All(&users)
+	} else if pushmsg.Class == "" {
+		err = c.Find(bson.M{"specialty": pushmsg.Specialty, "grade": pushmsg.Grade}).All(&users)
+	} else {
+		err = c.Find(bson.M{"specialty": pushmsg.Specialty, "grade": pushmsg.Grade, "class": pushmsg.Class}).All(&users)
+	}
+	// logger.Debug(users)
+	//
+	for _, v := range users {
+		if g_clientList.contains(v.Id) {
+			msg, err := json.Marshal(sendmsg)
+			if err != nil {
+				logger.Warn("编码成json数据时出错, err:", err)
+			}
+			targetChan := g_clientList.get(v.Id)
+			targetChan <- msg
+
+			noticMsg.IsRead = "Y"
+		} else {
+			noticMsg.IsRead = "N"
+		}
+
+		c := session.DB("D_" + v.Id).C("C_NOTIFICATION_MSG")
+		c.Insert(&noticMsg)
+	}
 }
 
 // 用户离线
@@ -596,5 +970,8 @@ func getId(msg, nodeName string) string {
 		return "nil"
 	}
 	jnode := jroot.GetNodeByName(nodeName)
+	if jnode == nil {
+		return ""
+	}
 	return jnode.ValueString
 }

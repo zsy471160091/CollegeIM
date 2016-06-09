@@ -1,5 +1,9 @@
 package protocol
 
+import (
+	"gopkg.in/mgo.v2/bson"
+)
+
 // 请求的消息类型
 const (
 	// 登陆
@@ -12,6 +16,13 @@ const (
 	IM_FIND_USER
 	IM_ADD_FRIEND
 	IM_DELETE_FRIEND
+	IM_GET_GROUP_LIST
+	IM_GET_GROUP_USERS
+	IM_CHAT_GROUP
+	IM_PUSH
+	IM_PUSH_REP
+	IM_GET_NOTIFICATION_LIST
+	IM_GET_NOTIFICATION
 
 	IM_UPLOAD_FILE
 	IM_GET_USER_LIST
@@ -21,13 +32,6 @@ const (
 	IM_USER_STATUS
 	IM_USER_INFO
 
-	// 聊天
-	IM_CHAT_P2P_REP
-	IM_CHAT_GROUP
-
-	// 推送
-	IM_PUSH
-	IM_PUSH_REPLY
 	IM_PUSH_GET_REPLY
 
 	// 登出
@@ -74,4 +78,48 @@ type DelFriRep struct {
 	Ack  string `json:"ack"`
 	Id   string `json:"id"`
 	Name string `json:"name"`
+}
+
+// 获取指定用户的群列表
+type GetGroupListItem struct {
+	Id   string `bson:"id"`
+	Name string `bson:"name"`
+}
+type GetGroupListRep struct {
+	Cmd    int                `json:"cmd"`
+	Ack    string             `json:"ack"`
+	Groups []GetGroupListItem `json:"groups"`
+}
+
+// 获取指定群的所有成员
+type GetGroupUserItem struct {
+	Id   string `bson:"id"`
+	Name string `bson:"name"`
+}
+type GetGroupUsersRep struct {
+	Cmd   int                `json:"cmd"`
+	Ack   string             `json:"ack"`
+	Id    string             `json:"id"`
+	Users []GetGroupUserItem `json:"users"`
+}
+
+// 推送消息结构
+type PushMsg struct {
+	ID        bson.ObjectId `bson:"_id"`
+	Fromid    string        `bson:"id"`
+	Fromname  string        `bson:"name"`
+	School    string        `bson:"school"`
+	Specialty string        `bson:"specialty"`
+	Grade     string        `bson:"grade"`
+	Class     string        `bson:"class"`
+	Title     string        `bson:"title"`
+	Content   string        `bson:"content"`
+	Time      string        `bson:"time"`
+}
+type NotificationMsg struct {
+	Fromid   string `json:"id"`
+	Fromname string `json:"name"`
+	Title    string `json:"title"`
+	Content  string `json:"content"`
+	Time     string `json:"time"`
 }
