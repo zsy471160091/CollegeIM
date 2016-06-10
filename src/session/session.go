@@ -155,5 +155,8 @@ func getCMD(msg []byte) int {
 		return -1
 	}
 	jnode := jroot.GetNodeByName("cmd")
+	if jnode == nil {
+		return -1
+	}
 	return int(jnode.ValueNumber)
 }

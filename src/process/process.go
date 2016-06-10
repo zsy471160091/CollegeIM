@@ -6,6 +6,8 @@ import (
 	"github.com/donnie4w/json4g"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
+	"io/ioutil"
+	"os"
 	"protocol"
 	"time"
 )
@@ -15,6 +17,7 @@ type cmd_process map[int](func(msg []byte, sendChan chan<- []byte))
 var g_DB_URL string
 
 var g_File_Address string
+var g_File_Save_Dir string
 
 var CMD_PROCESS cmd_process
 
@@ -31,26 +34,31 @@ func InitDB(db_url string) error {
 	return nil
 }
 
-func InitFileAddress(address string) {
+func InitFileAddress(address, saveDir string) {
 	g_File_Address = address
+	g_File_Save_Dir = saveDir
 }
 
 func init() {
 	CMD_PROCESS = cmd_process{
-		protocol.IM_LOGIN:            do_login,
-		protocol.IM_GET_USER_INFO:    do_get_user_info,
-		protocol.IM_GET_USER_FRIENDS: do_get_user_friends,
-		protocol.IM_CHAT_P2P:         do_chat_p2p,
-		protocol.IM_GET_OFFLINE_MSG:  do_get_offline_msg,
-		protocol.IM_UPLOAD_FILE:      do_upload_file,
-		protocol.IM_MODIFY_PWD:       do_modify_pwd,
-		protocol.IM_FIND_USER:        do_find_user,
-		protocol.IM_ADD_FRIEND:       do_add_friend,
-		protocol.IM_DELETE_FRIEND:    do_delete_friend,
-		protocol.IM_GET_GROUP_LIST:   do_get_group_list,
-		protocol.IM_GET_GROUP_USERS:  do_get_group_users,
-		protocol.IM_CHAT_GROUP:       do_chat_group,
-		protocol.IM_PUSH:             do_push,
+		protocol.IM_LOGIN:                 do_login,
+		protocol.IM_GET_USER_INFO:         do_get_user_info,
+		protocol.IM_GET_USER_FRIENDS:      do_get_user_friends,
+		protocol.IM_CHAT_P2P:              do_chat_p2p,
+		protocol.IM_GET_OFFLINE_MSG:       do_get_offline_msg,
+		protocol.IM_UPLOAD_FILE:           do_upload_file,
+		protocol.IM_MODIFY_PWD:            do_modify_pwd,
+		protocol.IM_FIND_USER:             do_find_user,
+		protocol.IM_ADD_FRIEND:            do_add_friend,
+		protocol.IM_DELETE_FRIEND:         do_delete_friend,
+		protocol.IM_GET_GROUP_LIST:        do_get_group_list,
+		protocol.IM_GET_GROUP_USERS:       do_get_group_users,
+		protocol.IM_CHAT_GROUP:            do_chat_group,
+		protocol.IM_PUSH:                  do_push,
+		protocol.IM_GET_NOTIFICATION_LIST: do_get_notification_list,
+		protocol.IM_GET_NOTIFICATION:      do_get_notification,
+		protocol.IM_SEND_FILE:             do_send_file,
+		protocol.IM_GET_FILE_LIST:         do_get_file_list,
 		// IM_USER_STATUS:Do_User_STATUS,
 		// IM_USER_INFO:Do
 		// IM_CHAT_GROUP
@@ -239,7 +247,6 @@ func do_get_user_friends(msg []byte, sendChan chan<- []byte) {
 		rep.Friends = fri.Friends
 		rep.Ack = "success"
 	}
-
 }
 
 // 点对点聊天
@@ -781,7 +788,7 @@ func do_chat_group(msg []byte, sendChan chan<- []byte) {
 			c := session.DB("D_" + v.Id).C("C_GROUP_CHAT_MSG")
 			c.Insert(&chatmsg)
 		}
-		c = session.DB("D_GROUP").C("C_" + GroupId + "_MSG")
+		c = session.DB("D_" + GroupId).C("C_ALL_MSG")
 		c.Insert(&chatmsg)
 	}
 	return
@@ -843,7 +850,7 @@ func do_push(msg []byte, sendChan chan<- []byte) {
 	if err != nil {
 		return
 	}
-	c := session.DB("D_PUSH_MSG").C("C_ALL_MSG")
+	c := session.DB("D_PUSH_MSG").C("C_ALL_PUSH_MSG")
 	defer session.Close()
 
 	err = c.Insert(&pushmsg)
@@ -855,6 +862,238 @@ func do_push(msg []byte, sendChan chan<- []byte) {
 		rep.Msg = "成功发送通知"
 		go sendPushMsg(pushmsg)
 	}
+}
+
+// 获取通知列表
+func do_get_notification_list(msg []byte, sendChan chan<- []byte) {
+	type notificationMsg struct {
+		ID     bson.ObjectId `bson:"_id"`
+		Title  string        `bson:"title"`
+		IsRead string        `bson:"isRead"`
+	}
+	// type noticItem struct {
+	// 	ID     string `json:"_id"`
+	// 	Title  string `json:"title"`
+	// 	IsRead string `json:"isRead"`
+	// }
+	type repMsg struct {
+		Cmd   int               `json:"cmd"`
+		Ack   string            `json:"ack"`
+		Items []notificationMsg `json:"notifications"`
+	}
+
+	// 从请求信息中取出相应信息
+	reqId := getId(string(msg), "id")
+	logger.Debug("do_get_notification_list:", "id", reqId)
+
+	rep := repMsg{
+		Cmd: protocol.IM_GET_NOTIFICATION_LIST,
+	}
+	defer func() {
+		msg, err := json.Marshal(rep)
+		if err != nil {
+			logger.Warn("编码成json数据时出错, err:", err)
+		}
+		sendChan <- msg
+	}()
+	// 查找数据库
+	session, err := mgo.Dial(g_DB_URL)
+	if err != nil {
+		rep.Ack = "error"
+		return
+	}
+	c := session.DB("D_" + reqId).C("C_NOTIFICATION_MSG")
+	defer session.Close()
+
+	noticitems := []notificationMsg{}
+	err = c.Find(nil).Sort("-time").All(&noticitems)
+
+	if err != nil {
+		rep.Ack = "error"
+	} else {
+		rep.Ack = "success"
+		rep.Items = noticitems
+	}
+}
+
+// 获取通知内容
+func do_get_notification(msg []byte, sendChan chan<- []byte) {
+	type notificationMsg struct {
+		// ID       bson.ObjectId `bson:"_id"`
+		Fromid   string `bson:"id"`
+		Fromname string `bson:"name"`
+		Title    string `bson:"title"`
+		Content  string `bson:"content"`
+		Time     string `bson:"time"`
+		// IsRead   string `bson:"isRead"`
+	}
+	type repMsg struct {
+		Cmd      int    `json:"cmd"`
+		Ack      string `json:"ack"`
+		Fromid   string `json:"id"`
+		Fromname string `json:"name"`
+		Title    string `json:"title"`
+		Content  string `json:"content"`
+		Time     string `json:"time"`
+	}
+
+	// 从请求信息中取出相应信息
+	reqId := getId(string(msg), "id")
+	reqNoticId := getId(string(msg), "notic_id")
+	logger.Debug("do_get_notification:", "id", reqId, "notic_id", reqNoticId)
+
+	// 装备反馈信息
+	rep := repMsg{
+		Cmd: protocol.IM_PUSH,
+	}
+
+	defer func() {
+		msg, err := json.Marshal(rep)
+		if err != nil {
+			logger.Warn("编码成json数据时出错, err:", err)
+		}
+		sendChan <- msg
+	}()
+
+	// 在数据库中查找
+	session, err := mgo.Dial(g_DB_URL)
+	if err != nil {
+		return
+	}
+	c := session.DB("D_" + reqId).C("C_NOTIFICATION_MSG")
+	defer session.Close()
+
+	noticMsg := notificationMsg{}
+	err = c.Find(bson.M{"_id": bson.ObjectIdHex(reqNoticId)}).One(&noticMsg)
+	if err != nil {
+		rep.Ack = "error"
+	} else {
+		rep.Fromid = noticMsg.Fromid
+		rep.Fromname = noticMsg.Fromname
+		rep.Time = noticMsg.Time
+		rep.Title = noticMsg.Title
+		rep.Content = noticMsg.Content
+
+		c.Update(bson.M{"_id": bson.ObjectIdHex(reqNoticId)},
+			bson.M{"$set": bson.M{
+				"isRead": "Y",
+			}})
+	}
+
+}
+
+// 给目标用户发送文件
+func do_send_file(msg []byte, sendChan chan<- []byte) {
+	type addFileMsg struct {
+		From_id   string `bson:"from_id"`
+		From_name string `bson:"from_name"`
+		To_id     string `bson:"to_id"`
+		To_name   string `bson:"to_name"`
+		File_name string `bson:"file_name"`
+		File_path string `bson:"file_path"`
+		Time      string `bson:"time"`
+	}
+	type addFileRep struct {
+		Cmd                int    `json:"cmd"`
+		Ack                string `json:"ack"`
+		Fri_id             string `json:"id"`
+		Fri_name           string `json:"name"`
+		File_path          string `json:"file_path"`
+		FileServer_address string `json:"fileServer_addr"`
+	}
+
+	addMsg := addFileMsg{}
+	// 从请求信息中取出目标用户id
+	fromId := getId(string(msg), "from_id")
+	fromName := getId(string(msg), "from_name")
+	toId := getId(string(msg), "to_id")
+	toName := getId(string(msg), "to_name")
+	fileName := getId(string(msg), "file_name")
+	logger.Debug("do_send_file:", "from_id", fromId, "from_name", fromName, "to_id", toId, "to_name", toName, "File_name", fileName)
+
+	rep := addFileRep{
+		Cmd:                protocol.IM_SEND_FILE,
+		Fri_id:             toId,
+		Fri_name:           toName,
+		FileServer_address: g_File_Address,
+	}
+	defer func() {
+		msg, err := json.Marshal(rep)
+		if err != nil {
+			logger.Warn("编码成json数据时出错, err:", err)
+		}
+		sendChan <- msg
+	}()
+
+	addMsg.From_id = fromId
+	addMsg.From_name = fromName
+	addMsg.To_id = toId
+	addMsg.To_name = toName
+	addMsg.File_name = fileName
+	addMsg.Time = time.Now().Format("2006-01-02 15:04:05")
+
+	// 分配文件路径
+	if os.MkdirAll(g_File_Save_Dir+"/"+toId, 0666) != nil {
+		rep.Ack = "error"
+		rep.File_path = "获取文件存放路径失败，无法传输文件"
+	} else {
+		rep.Ack = "success"
+		rep.File_path = g_File_Save_Dir + "/" + toId + "/" + fileName
+		addMsg.File_path = g_File_Save_Dir + "/" + toId + "/" + fileName
+
+		// 消息记录插入数据库
+		session, err := mgo.Dial(g_DB_URL)
+		if err != nil {
+			logger.Warn("Error: 服务器端无法连接到数据库")
+			return
+		}
+		defer session.Close()
+
+		c := session.DB("D_" + toId).C("C_FILE_LIST")
+		c.Insert(&addMsg)
+
+	}
+
+}
+
+// 获取文件列表
+func do_get_file_list(msg []byte, sendChan chan<- []byte) {
+	type fileListRep struct {
+		Cmd                int      `json:"cmd"`
+		Ack                string   `json:"ack"`
+		File_list          []string `json:"file_list"`
+		File_dir           string   `json:"file_dir"`
+		FileServer_address string   `json:"fileServer_addr"`
+	}
+
+	rep := fileListRep{
+		Cmd: protocol.IM_GET_FILE_LIST,
+	}
+
+	id := getId(string(msg), "id")
+	files, err := ioutil.ReadDir(g_File_Save_Dir + "/" + id)
+	if err != nil {
+		rep.Ack = "error"
+	} else {
+		for _, file := range files {
+			if file.IsDir() {
+				continue
+			} else {
+				rep.File_list = append(rep.File_list, file.Name())
+			}
+		}
+		rep.Ack = "success"
+		rep.File_dir = g_File_Save_Dir + "/" + id
+		rep.FileServer_address = g_File_Address
+	}
+
+	defer func() {
+		msg, err := json.Marshal(rep)
+		if err != nil {
+			logger.Warn("编码成json数据时出错, err:", err)
+		}
+		sendChan <- msg
+	}()
 }
 
 // 通知推送

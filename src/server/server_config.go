@@ -19,6 +19,7 @@ type ConfigInfo struct {
 		Output_Level string
 	}
 	FileServer_Laddr string
+	File_Save_Dir    string
 }
 
 func NewConfig(configfile string) *ConfigInfo {

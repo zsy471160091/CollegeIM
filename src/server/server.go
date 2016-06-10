@@ -28,8 +28,8 @@ func main() {
 	err = process.InitDB(Conf.DB_url)
 	CheckError(err)
 
-	// precess.InitFileAddress(Conf.FileServer_Laddr)
-
+	process.InitFileAddress(Conf.FileServer_Laddr, Conf.File_Save_Dir)
+	go FileServer()
 	// logger.Debug(*Conf)
 
 	// 开启监听
